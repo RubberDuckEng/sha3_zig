@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 
 // Context object
 // init
@@ -19,44 +20,98 @@ const bytesPerState = 200;
 
 const Block = struct {
     value: [bytesPerBlock]u8, // width r
+
+    pub fn init() Block {
+        return Block{
+            .value = [_]u8{0} ** bytesPerBlock,
+        };
+    }
 };
 
-fn pad(_: []const u8) []const Block {
-    // compute the number of blocks
+fn pad(data: []const u8) Block {
+    // Goal is to add two 1 bits and then enough 0 bits between then to make
+    // an exact round of blocks.
+    assert(data.len < bytesPerBlock);
 
-    // var blocks = std.mem.alignBackward(u64, data) / 8;
-    // var padded = std.mem.alloc(Block, blocks + 1) catch unreachable;
-    // std.mem.copy(u8, padded[0..data.len], data);
-    // padded[data.len] = 0x80;
-    // return padded;
+    // 1000000001 is 0x81
+    const lonePadByte = 0x81;
+    const startPadByte = 0x80;
+    const endPadByte = 0x01;
+
+    var block = Block.init();
+    std.mem.copy(u8, block.value[0..], data);
+
+    if (data.len + 1 == bytesPerBlock) {
+        block.value[data.len] = lonePadByte;
+        return block;
+    }
+
+    block.value[data.len] = startPadByte;
+    block.value[block.value.len - 1] = endPadByte;
+    return block;
 }
 
-const InputManager = struct {
+const expect = std.testing.expect;
+const expectEqual = std.testing.expectEqual;
+
+test "padding bytes" {
+    // Zig has separate types for null terminated arrays vs slices
+    // 'A' would be null-terminated array and the wrong type.
+    const upperCaseA = [1]u8{0x65}; // ASCII 'A'
+    try expectEqual(pad((upperCaseA ** (bytesPerBlock - 1))[0..]), Block{
+        .value = upperCaseA ** (bytesPerBlock - 1) ++ [_]u8{0x81},
+    });
+
+    try expectEqual(pad((upperCaseA ** (bytesPerBlock - 2))[0..]), Block{
+        .value = upperCaseA ** (bytesPerBlock - 2) ++ [_]u8{0x80} ++ [_]u8{0x01},
+    });
+
+    try expectEqual(pad((upperCaseA ** 4)[0..]), Block{
+        .value = upperCaseA ** 4 ++ [_]u8{0x80} ++ [_]u8{0x00} ** (bytesPerBlock - 6) ++ [_]u8{0x01},
+    });
+}
+
+const BlockMaker = struct {
     pending: []u8,
 
-    pub fn init() InputManager {
-        return InputManager{
+    pub fn init() BlockMaker {
+        return BlockMaker{
             .pending = &[_]u8{},
         };
     }
 
-    pub fn addData(_: *InputManager, _: []const u8) void {
-        // TODO
+    pub fn addData(self: *BlockMaker, data: []const u8) void {
+        self.pending = self.pending ++ data;
     }
 
-    pub fn getNextBlock(_: *InputManager) ?Block {
-        return null;
+    pub fn getNextBlock(self: *BlockMaker) ?Block {
+        if (self.pending.len < bytesPerBlock) {
+            return null;
+        }
+        const block = Block{
+            .value = self.pending[0..bytesPerBlock],
+        };
+        self.pending = self.pending[bytesPerBlock..];
+        return block;
+    }
+
+    pub fn finish(self: *BlockMaker) Block {
+        const block = Block{
+            .value = pad(self.pending),
+        };
+        self.pending = &[_]u8{};
+        return block;
     }
 };
 
 const Hasher = struct {
     state: [bytesPerState]u8, // width b
-    input: InputManager,
+    input: BlockMaker,
 
     pub fn init() Hasher {
         return Hasher{
             .state = [_]u8{0} ** bytesPerState,
-            .input = InputManager.init(),
+            .input = BlockMaker.init(),
         };
     }
 
