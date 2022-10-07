@@ -1,5 +1,8 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
+const ArrayList = std.ArrayList;
+const test_allocator = std.testing.allocator;
 
 // Context object
 // init
@@ -72,69 +75,86 @@ test "padding bytes" {
 }
 
 const BlockMaker = struct {
-    pending: []u8,
+    pending: ArrayList(u8),
 
-    pub fn init() BlockMaker {
+    pub fn init(allocator: Allocator) BlockMaker {
         return BlockMaker{
-            .pending = &[_]u8{},
+            .pending = ArrayList(u8).init(allocator),
         };
     }
 
     pub fn addData(self: *BlockMaker, data: []const u8) void {
-        self.pending = self.pending ++ data;
+        self.pending.appendSlice(data);
     }
 
     pub fn getNextBlock(self: *BlockMaker) ?Block {
-        if (self.pending.len < bytesPerBlock) {
+        if (self.pending.items.len < bytesPerBlock) {
             return null;
         }
         const block = Block{
-            .value = self.pending[0..bytesPerBlock],
+            .value = self.pending.items[0..bytesPerBlock],
         };
-        self.pending = self.pending[bytesPerBlock..];
+        self.pending.replaceRange(0, bytesPerBlock, &[_]u8{});
         return block;
     }
 
     pub fn finish(self: *BlockMaker) Block {
-        const block = Block{
-            .value = pad(self.pending),
-        };
-        self.pending = &[_]u8{};
+        const block = pad(self.pending);
+        self.pending.clearAndFree();
         return block;
     }
 };
 
 const Hasher = struct {
     state: [bytesPerState]u8, // width b
-    input: BlockMaker,
+    maker: BlockMaker,
+    isFinished: bool,
 
     pub fn init() Hasher {
         return Hasher{
             .state = [_]u8{0} ** bytesPerState,
-            .input = BlockMaker.init(),
+            .maker = BlockMaker.init(),
+            .isFinished = false,
         };
     }
 
-    // pad
-    // permute
-
-    fn processBlock(_: *Hasher, _: Block) void {
-        // xor
-        // permute
+    fn processBlock(self: *Hasher, block: Block) void {
+        // Permute the bits of the block.
+        // xor the block into the state.
+        for (block.value) |byte, i| {
+            self.state[i] ^= byte;
+        }
     }
 
     pub fn add(self: *Hasher, data: []const u8) void {
-        self.input.addData(data);
-        while (self.input.getNextBlock()) |block| {
+        assert(!self.isFinished);
+        self.maker.addData(data);
+        while (self.maker.getNextBlock()) |block| {
             self.processBlock(block);
         }
     }
 
-    // TODO: gn finish(self: Hasher) []u8 { }
+    pub fn finish(self: *Hasher) []u8 {
+        assert(!self.isFinished);
+        const block = self.maker.finish();
+        self.processBlock(block);
+        self.isFinished = true;
+        return self.state[0..];
+    }
 };
+
+test "xor hasher" {
+    var hasher = Hasher.init();
+    hasher.add("abc");
+    hasher.add("def");
+    try expect(std.mem.eql(u8, hasher.finish(), &[_]u8{ 0x3a, 0x98, 0x0d, 0x19, 0x9a, 0x7c, 0xe9, 0x30, 0x0a, 0x5d, 0x7e, 0x2d, 0x86, 0x55, 0xbd, 0x38, 0x60, 0xeb, 0xdb, 0x10, 0x7e, 0x9e, 0x11, 0x23, 0x0c, 0xc7, 0xbf, 0x63, 0xf6, 0xe1, 0xda, 0x27 }));
+}
 
 pub fn main() anyerror!void {
     std.log.info("All your codebase are belong to us.", .{});
+
+    // var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    // const allocator = gpa.allocator();
 
     var hasher = Hasher.init();
     hasher.add("Hello, world!");
